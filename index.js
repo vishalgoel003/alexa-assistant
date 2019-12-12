@@ -24,10 +24,6 @@ var firstRunText = 'REPEAT AFTER ME Welcome to the unofficial Google Assistant s
 // create JSON object to hold config
 var config = {};
 
-// Load AWS credentials
-
-var s3 = new AWS.S3();
-
 // Get Google Credentials from Evironment Variables - these are set in the Lambda function configuration
 
 const VERSION_NUMBER = '1.1';
@@ -559,8 +555,8 @@ var handlers = {
                 console.log('mp3 has been written');
                 // Create read stream from MP3 file
                 var readmp3 = fs.createReadStream('/tmp/response.mp3');
-                // Pipe to S3 upload function
-                readmp3.pipe(uploadFromStream(s3));
+                // Pipe to File.io upload function
+                readmp3.pipe(uploadFromStream());
             })
             // Create LAME encoder instance
             var encoder = new lame.Encoder({
@@ -580,86 +576,6 @@ var handlers = {
             // Set volume gain on google output to be +75%
             // Any more than this then we risk major clipping
             vol.setVolume(1.75);
-            // Create function to upload MP3 file to S3
-            function uploadFromStream(s3) {
-                var pass = new Stream.PassThrough();
-                var filename = searchFunction.event.session.user.userId
-                var params = {Bucket: S3_BUCKET, Key: filename, Body: pass};
-                s3.upload(params, function(err, data) {
-                    if (err){
-                        console.log('S3 upload error: ' + err)
-                        searchFunction.emit(':tell', 'There was an error uploading to S3. ');
-
-                    } else{
-                        // Upload has been sucessfull - we can know issue an alexa response based upon microphone state
-                        var signedURL;
-                        // create a signed URL to the MP3 that expires after 5 seconds - this should be plenty of time to allow alexa to load and cache mp3
-                        var signedParams = {Bucket: S3_BUCKET, Key: filename, Expires: 10, ResponseContentType: 'audio/mpeg'};
-                        s3.getSignedUrl('getObject', signedParams, function (err, url) {
-
-                            if (url){
-                                // escape out any illegal XML characters;
-                                url = xmlescape(url)
-                                signedURL = url;
-
-                                // if response text is blank just add a speaker icon to response
-                                if (googleResponseText == ''){
-                                    googleResponseText = '"🔊"'
-                                }
-
-                                // remove any REPEAT AFTER ME form alexa utterance
-                                var cleanUtterance = alexaUtteranceText.replace('REPEAT AFTER ME ', '');
-
-                                var cardContent = 'Request:<br/><i>' + cleanUtterance + '</i><br/><br/>Supplemental Response:<br/>' + googleResponseText
-                                // replace carriage returns with breaks
-                                cardContent = cardContent.replace(/\\n/g, '<br/>');
-                                // deal with any \&quot;
-                                cardContent = cardContent.replace(/\\&quot;/g, '&quot;');
-                                console.log(cardContent);
-                                var cardTitle = 'Google Assistant for Alexa'
-                                // Let remove any (playing sfx)
-                                cardContent = cardContent.replace(/(\(playing sfx\))/g, '🔊');
-                                var speechOutput = '<audio src="' + signedURL + '"/>';
-                                var template = {
-                                    "type": "BodyTemplate1",
-                                    "token": "bt1",
-                                    "backButton": "HIDDEN",
-                                    "title": cardTitle,
-                                    "textContent": {
-                                        "primaryText": {
-                                            "text": cardContent,
-                                            "type": "RichText"
-                                        }
-                                    }
-                                }
-                                searchFunction.response.speak(speechOutput)
-                                if (searchFunction.event.context.System.device.supportedInterfaces.Display) {
-                                    searchFunction.response.renderTemplate(template);
-                                }
-                                // If API has requested Microphone to stay open then will create an Alexa 'Ask' response
-                                // We also keep the microphone on the launchintent 'Hello' request as for some reason the API closes the microphone
-
-                                if (microphoneOpen == true || alexaUtteranceText == 'Hello'){
-                                    console.log('Microphone is open so keeping session open')
-                                    searchFunction.response.listen(" ");
-                                    searchFunction.emit(':responseReady');
-                                }
-                                // Otherwise we create an Alexa 'Tell' command which will close the session
-                                else{
-                                    console.log('Microphone is closed so closing session')
-                                    searchFunction.response.shouldEndSession(true)
-                                    searchFunction.emit(':responseReady')
-
-                                }
-                            } else {
-                                searchFunction.emit(':tell', 'There was an error creating the signed URL.');
-                            }
-                        });
-
-                    }
-                });
-                return pass;
-            }
 
             // Create function to upload MP3 file to File.io
             function uploadFromStream() {
@@ -671,90 +587,80 @@ var handlers = {
                     formData: {
                         'file': pass
                     }
-                }, function(err, data) {
-                    if (err){
+                }, function (err, response, body) {
+                    if (err) {
                         console.log('File.io upload error: ' + err)
                         searchFunction.emit(':tell', 'There was an error uploading to File.io ');
 
-                    } else {
-                        //TODO: check "success" value and emit error if upload fails
+                    } else if (response) {
+                        var bodyJSON = JSON.parse(body);
+                        if (bodyJSON.success) {
+                            var url = bodyJSON.link;
+                            url = xmlescape(url);
 
-                        // Upload has been sucessfull - we can know issue an alexa response based upon microphone state
-                        var signedURL;
-                        // create a signed URL to the MP3 that expires after 5 seconds - this should be plenty of time to allow alexa to load and cache mp3
-                        var signedParams = {Bucket: S3_BUCKET, Key: filename, Expires: 10, ResponseContentType: 'audio/mpeg'};
-                        s3.getSignedUrl('getObject', signedParams, function (err, url) {
+                            // if response text is blank just add a speaker icon to response
+                            if (googleResponseText === '') {
+                                googleResponseText = '"🔊"'
+                            }
 
-                            if (url){
-                                // escape out any illegal XML characters;
-                                url = xmlescape(url)
-                                signedURL = url;
+                            // remove any REPEAT AFTER ME form alexa utterance
+                            var cleanUtterance = alexaUtteranceText.replace('REPEAT AFTER ME ', '');
 
-                                // if response text is blank just add a speaker icon to response
-                                if (googleResponseText == ''){
-                                    googleResponseText = '"🔊"'
-                                }
-
-                                // remove any REPEAT AFTER ME form alexa utterance
-                                var cleanUtterance = alexaUtteranceText.replace('REPEAT AFTER ME ', '');
-
-                                var cardContent = 'Request:<br/><i>' + cleanUtterance + '</i><br/><br/>Supplemental Response:<br/>' + googleResponseText
-                                // replace carriage returns with breaks
-                                cardContent = cardContent.replace(/\\n/g, '<br/>');
-                                // deal with any \&quot;
-                                cardContent = cardContent.replace(/\\&quot;/g, '&quot;');
-                                console.log(cardContent);
-                                var cardTitle = 'Google Assistant for Alexa'
-                                // Let remove any (playing sfx)
-                                cardContent = cardContent.replace(/(\(playing sfx\))/g, '🔊');
-                                var speechOutput = '<audio src="' + signedURL + '"/>';
-                                var template = {
-                                    "type": "BodyTemplate1",
-                                    "token": "bt1",
-                                    "backButton": "HIDDEN",
-                                    "title": cardTitle,
-                                    "textContent": {
-                                        "primaryText": {
-                                            "text": cardContent,
-                                            "type": "RichText"
-                                        }
+                            var cardContent = 'Request:<br/><i>' + cleanUtterance + '</i><br/><br/>Supplemental Response:<br/>' + googleResponseText
+                            // replace carriage returns with breaks
+                            cardContent = cardContent.replace(/\\n/g, '<br/>');
+                            // deal with any \&quot;
+                            cardContent = cardContent.replace(/\\&quot;/g, '&quot;');
+                            console.log(cardContent);
+                            var cardTitle = 'Google Assistant for Alexa'
+                            // Let remove any (playing sfx)
+                            cardContent = cardContent.replace(/(\(playing sfx\))/g, '🔊');
+                            var speechOutput = '<audio src="' + url + '"/>';
+                            var template = {
+                                "type": "BodyTemplate1",
+                                "token": "bt1",
+                                "backButton": "HIDDEN",
+                                "title": cardTitle,
+                                "textContent": {
+                                    "primaryText": {
+                                        "text": cardContent,
+                                        "type": "RichText"
                                     }
                                 }
-                                searchFunction.response.speak(speechOutput)
-                                if (searchFunction.event.context.System.device.supportedInterfaces.Display) {
-                                    searchFunction.response.renderTemplate(template);
-                                }
-                                // If API has requested Microphone to stay open then will create an Alexa 'Ask' response
-                                // We also keep the microphone on the launchintent 'Hello' request as for some reason the API closes the microphone
-
-                                if (microphoneOpen == true || alexaUtteranceText == 'Hello'){
-                                    console.log('Microphone is open so keeping session open')
-                                    searchFunction.response.listen(" ");
-                                    searchFunction.emit(':responseReady');
-                                }
-                                // Otherwise we create an Alexa 'Tell' command which will close the session
-                                else{
-                                    console.log('Microphone is closed so closing session')
-                                    searchFunction.response.shouldEndSession(true)
-                                    searchFunction.emit(':responseReady')
-
-                                }
-                            } else {
-                                searchFunction.emit(':tell', 'There was an error creating the signed URL.');
                             }
-                        });
+                            searchFunction.response.speak(speechOutput)
+                            if (searchFunction.event.context.System.device.supportedInterfaces.Display) {
+                                searchFunction.response.renderTemplate(template);
+                            }
+                            // If API has requested Microphone to stay open then will create an Alexa 'Ask' response
+                            // We also keep the microphone on the launchintent 'Hello' request as for some reason the API closes the microphone
 
+                            if (microphoneOpen == true || alexaUtteranceText == 'Hello') {
+                                console.log('Microphone is open so keeping session open')
+                                searchFunction.response.listen(" ");
+                                searchFunction.emit(':responseReady');
+                            }
+                            // Otherwise we create an Alexa 'Tell' command which will close the session
+                            else {
+                                console.log('Microphone is closed so closing session')
+                                searchFunction.response.shouldEndSession(true)
+                                searchFunction.emit(':responseReady')
+
+                            }
+                        } else {
+                            searchFunction.emit(':tell', 'There was an error in uploading output to File.io');
+                        }
                     }
                 });
                 return pass;
             }
 
-            // When encoding of MP3 has finished we upload the result to S3
+            // When encoding of MP3 has finished we upload the result to File.io
             encoder.on('finish', function () {
                 // Close the MP3 file
                 wait(0.1, 'seconds', function() {
                     console.error('Encoding done!');
-                    console.error('Streaming mp3 file to s3');
+                    console.error('Streaming mp3 file to File.io');
                     writemp3.end();
                 })
             });
@@ -840,7 +746,3 @@ exports.handler = function(event, context, callback){
     alexa.dynamoDBTableName = 'AlexaAssistantSkillSettings';
     alexa.execute();
 };
-
-
-
-
